@@ -1,0 +1,11 @@
+# R临时文件 
+.Rhistory 
+.RData 
+.Rproj.user/ 
+*.Rproj 
+ 
+# Python/Jupyter文件 
+__pycache__/  __pycache__/ 
+*.pyc 
+.ipynb_checkpoints/ 
+ 
