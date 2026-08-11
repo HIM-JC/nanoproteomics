@@ -1,1 +1,569 @@
 
+# ============================================================
+# 文献数据异质性量化分析 - 多蛋白对比版本（分开绘图）
+# 包含 ALB, C3, APOA2 - 三张图独立显示
+# ============================================================
+
+# 清空环境
+rm(list = ls())
+
+# 加载包
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+library(cowplot)
+
+# ============================================================
+# 1. 读取数据
+# ============================================================
+
+df <- read.csv("D:/jc/nanoparticl proteomics/article/PNAS/literature data.csv", 
+               header = TRUE, 
+               stringsAsFactors = FALSE,
+               check.names = FALSE)
+
+cat("原始数据:", nrow(df), "个样本\n")
+
+# ============================================================
+# 2. 数据清洗
+# ============================================================
+
+# 2.1 定义要分析的蛋白
+protein_cols <- c("ALB", "C3", "APOA2")
+
+# 2.2 处理所有蛋白的0值
+for (protein in protein_cols) {
+  if (protein %in% names(df)) {
+    min_positive <- min(df[[protein]][df[[protein]] > 0], na.rm = TRUE)
+    df[[protein]][df[[protein]] == 0] <- min_positive / 10
+    cat(protein, "0值已替换\n")
+  }
+}
+
+# 2.3 处理Zeta potential
+df$`Zeta potential` <- as.numeric(as.character(df$`Zeta potential`))
+df <- df[!is.na(df$`Zeta potential`), ]
+cat("删除Zeta缺失后:", nrow(df), "个样本\n")
+
+# 2.4 处理SizeDLS
+df$SizeDLS <- as.numeric(as.character(df$SizeDLS))
+df <- df[!is.na(df$SizeDLS), ]
+cat("删除Size缺失后:", nrow(df), "个样本\n")
+
+# 2.5 处理所有数值变量
+df$`Centrifugation speed` <- as.numeric(as.character(df$`Centrifugation speed`))
+df$`Centrifugation time` <- as.numeric(as.character(df$`Centrifugation time`))
+df$`Incubation time` <- as.numeric(as.character(df$`Incubation time`))
+df$`Incubation temperature` <- as.numeric(as.character(df$`Incubation temperature`))
+df$`Incubation plasma concentration` <- as.numeric(as.character(df$`Incubation plasma concentration`))
+df$`Incubation NP concentration` <- as.numeric(as.character(df$`Incubation NP concentration`))
+df$PDI <- as.numeric(as.character(df$PDI))
+df$`Centrifugation repetitions` <- as.numeric(as.character(df$`Centrifugation repetitions`))
+df$`Certrifugation temperature` <- as.numeric(as.character(df$`Certrifugation temperature`))
+
+# 2.6 处理"Not Reported"（分类变量）
+df$`NP shape`[df$`NP shape` == "Not Reported"] <- NA
+df$`Incubation protein source`[df$`Incubation protein source` == "Not Reported"] <- NA
+df$`Dispersion medium`[df$`Dispersion medium` == "Not Reported"] <- NA
+df$`Incubation culture`[df$`Incubation culture` == "Not Reported"] <- NA
+
+# 2.7 用中位数填充数值变量缺失值
+numeric_cols <- c(
+  "Centrifugation speed",
+  "Centrifugation time",
+  "Incubation time",
+  "Incubation temperature",
+  "Incubation plasma concentration",
+  "Incubation NP concentration",
+  "PDI",
+  "Centrifugation repetitions",
+  "Certrifugation temperature"
+)
+
+for (col in numeric_cols) {
+  median_val <- median(df[[col]], na.rm = TRUE)
+  df[[col]][is.na(df[[col]])] <- median_val
+  cat(col, "中位数填充:", median_val, "\n")
+}
+
+cat("缺失值已全部填充\n")
+
+# ============================================================
+# 3. 重命名列
+# ============================================================
+
+names(df)[names(df) == "Zeta potential"] <- "Zeta.potential"
+names(df)[names(df) == "Study ID"] <- "Study_ID"
+names(df)[names(df) == "Surface modification"] <- "Surface.modification"
+names(df)[names(df) == "NP type"] <- "NP.type"
+names(df)[names(df) == "NP shape"] <- "NP.shape"
+names(df)[names(df) == "Centrifugation speed"] <- "Centrifugation.speed"
+names(df)[names(df) == "Centrifugation time"] <- "Centrifugation.time"
+names(df)[names(df) == "Incubation protein source"] <- "Incubation.protein.source"
+names(df)[names(df) == "Certrifugation temperature"] <- "Certrifugation.temperature"
+names(df)[names(df) == "Dispersion medium"] <- "Dispersion.medium"
+names(df)[names(df) == "Incubation culture"] <- "Incubation.culture"
+names(df)[names(df) == "Incubation time"] <- "Incubation.time"
+names(df)[names(df) == "Incubation temperature"] <- "Incubation.temperature"
+names(df)[names(df) == "Incubation plasma concentration"] <- "Incubation.plasma.concentration"
+names(df)[names(df) == "Incubation NP concentration"] <- "Incubation.NP.concentration"
+names(df)[names(df) == "Centrifugation repetitions"] <- "Centrifugation.repetitions"
+
+cat("✅ 清洗完成！最终样本数:", nrow(df), "\n")
+
+# ============================================================
+# 4. 合并低频分类变量（min_count = 5）
+# ============================================================
+
+merge_rare <- function(df, col, min_count = 5) {
+  freq <- table(df[[col]])
+  rare <- names(freq[freq < min_count])
+  if (length(rare) > 0) {
+    df[[paste0(col, "_merged")]] <- df[[col]]
+    df[[paste0(col, "_merged")]][df[[col]] %in% rare] <- "other"
+    cat(col, ": 合并了", length(rare), "个低频类别\n")
+  } else {
+    df[[paste0(col, "_merged")]] <- df[[col]]
+  }
+  return(df)
+}
+
+df <- merge_rare(df, "Surface.modification", min_count = 5)
+df <- merge_rare(df, "NP.type", min_count = 5)
+df <- merge_rare(df, "NP.shape", min_count = 5)
+df <- merge_rare(df, "Dispersion.medium", min_count = 5)
+df <- merge_rare(df, "Incubation.culture", min_count = 5)
+
+# ============================================================
+# 5. 创建派生变量并处理蛋白数据
+# ============================================================
+
+df$Zeta_abs <- abs(df$Zeta.potential)
+
+# 标准化所有连续变量
+df$Zeta_abs_scaled <- scale(df$Zeta_abs)
+df$SizeDLS_scaled <- scale(df$SizeDLS)
+df$Centrifugation.speed_scaled <- scale(df$Centrifugation.speed)
+df$Centrifugation.time_scaled <- scale(df$Centrifugation.time)
+df$Incubation.time_scaled <- scale(df$Incubation.time)
+df$Incubation.temperature_scaled <- scale(df$Incubation.temperature)
+df$Incubation.plasma.concentration_scaled <- scale(df$Incubation.plasma.concentration)
+df$Incubation.NP.concentration_scaled <- scale(df$Incubation.NP.concentration)
+df$PDI_scaled <- scale(df$PDI)
+df$Centrifugation.repetitions_scaled <- scale(df$Centrifugation.repetitions)
+df$Certrifugation.temperature_scaled <- scale(df$Certrifugation.temperature)
+
+# 处理蛋白数据：logit变换
+for (protein in protein_cols) {
+  if (protein %in% names(df)) {
+    df[[paste0(protein, "_logit")]] <- log(df[[protein]] / (100 - df[[protein]]))
+    df <- df[is.finite(df[[paste0(protein, "_logit")]]), ]
+    cat(protein, "logit变换完成, 样本数:", nrow(df), "\n")
+  }
+}
+
+df$Study_ID <- as.factor(df$Study_ID)
+
+# 删除分类变量缺失的行
+df <- df[!is.na(df$Surface.modification_merged), ]
+df <- df[!is.na(df$NP.type_merged), ]
+df <- df[!is.na(df$NP.shape_merged), ]
+df <- df[!is.na(df$Dispersion.medium_merged), ]
+df <- df[!is.na(df$Incubation.culture_merged), ]
+df <- df[!is.na(df$Incubation.protein.source), ]
+
+cat("最终分析样本数:", nrow(df), "\n")
+cat("独立研究数:", length(unique(df$Study_ID)), "\n")
+
+# ============================================================
+# 6. 定义变量组（最大化）
+# ============================================================
+
+# 纳米颗粒性质（6个）
+np_vars_max <- c(
+  "Surface.modification_merged",
+  "NP.type_merged",
+  "NP.shape_merged",
+  "Zeta_abs_scaled",
+  "SizeDLS_scaled",
+  "PDI_scaled"
+)
+
+# 方法学协变量（10个）
+method_vars_max <- c(
+  "Incubation.protein.source",
+  "Dispersion.medium_merged",
+  "Incubation.culture_merged",
+  "Centrifugation.speed_scaled",
+  "Centrifugation.time_scaled",
+  "Centrifugation.repetitions_scaled",
+  "Certrifugation.temperature_scaled",
+  "Incubation.time_scaled",
+  "Incubation.plasma.concentration_scaled",
+  "Incubation.NP.concentration_scaled"
+)
+
+cat("\n=== 纳米颗粒性质变量 (", length(np_vars_max), "个) ===\n")
+cat(paste("  ", np_vars_max, collapse = "\n"), "\n")
+
+cat("\n=== 方法学协变量 (", length(method_vars_max), "个) ===\n")
+cat(paste("  ", method_vars_max, collapse = "\n"), "\n")
+
+cat("\n总变量数:", length(np_vars_max) + length(method_vars_max), "\n")
+
+# ============================================================
+# 7. 定义分析函数
+# ============================================================
+
+analyze_protein <- function(df, protein, np_vars, method_vars) {
+  cat("\n========================================\n")
+  cat("分析蛋白:", protein, "\n")
+  cat("========================================\n")
+  
+  protein_col <- paste0(protein, "_logit")
+  
+  # 检查蛋白列是否存在
+  if (!protein_col %in% names(df)) {
+    cat("警告:", protein_col, "不存在，跳过\n")
+    return(NULL)
+  }
+  
+  # 移除该蛋白的缺失值
+  df_protein <- df[!is.na(df[[protein_col]]), ]
+  cat("样本数:", nrow(df_protein), "\n")
+  
+  # 空模型
+  model_null <- lmer(paste(protein_col, "~ 1 + (1 | Study_ID)"), 
+                     data = df_protein, REML = FALSE)
+  
+  # 仅纳米颗粒性质
+  formula_np <- paste(protein_col, "~", paste(np_vars, collapse = " + "), "+ (1 | Study_ID)")
+  model_np <- lmer(formula_np, data = df_protein, REML = FALSE)
+  
+  # 仅方法学协变量
+  formula_method <- paste(protein_col, "~", paste(method_vars, collapse = " + "), "+ (1 | Study_ID)")
+  model_method <- lmer(formula_method, data = df_protein, REML = FALSE)
+  
+  # 完整模型
+  formula_full <- paste(protein_col, "~", 
+                        paste(c(np_vars, method_vars), collapse = " + "), 
+                        "+ (1 | Study_ID)")
+  model_full <- lmer(formula_full, data = df_protein, REML = FALSE)
+  
+  # 计算伪R²
+  r2_func <- function(model, model_null) {
+    n <- length(residuals(model))
+    ll_full <- logLik(model)
+    ll_null <- logLik(model_null)
+    return(1 - exp(-2 * (as.numeric(ll_full) - as.numeric(ll_null)) / n))
+  }
+  
+  r2_full <- r2_func(model_full, model_null)
+  r2_np <- r2_func(model_np, model_null)
+  r2_method <- r2_func(model_method, model_null)
+  
+  # 计算独特贡献
+  variance_np_unique <- r2_full - r2_method
+  variance_method_unique <- r2_full - r2_np
+  variance_shared <- r2_np + r2_method - r2_full
+  variance_unexplained <- 1 - r2_full
+  
+  # 计算ICC
+  icc_result <- icc(model_null)
+  if (!is.null(icc_result$ICC) && length(icc_result$ICC) > 0) {
+    icc_value <- as.numeric(icc_result$ICC)
+  } else {
+    var_random <- as.numeric(VarCorr(model_null)$Study_ID)
+    var_residual <- sigma(model_null)^2
+    icc_value <- var_random / (var_random + var_residual)
+  }
+  
+  # 构建结果
+  result <- data.frame(
+    Protein = protein,
+    n_samples = nrow(df_protein),
+    n_studies = length(unique(df_protein$Study_ID)),
+    ICC = icc_value * 100,
+    NP_unique = max(0, variance_np_unique * 100),
+    Method_unique = max(0, variance_method_unique * 100),
+    Shared = max(0, variance_shared * 100),
+    Unexplained = max(0, variance_unexplained * 100),
+    R2_full = r2_full * 100
+  )
+  
+  # 归一化
+  total <- sum(result[4:8])
+  if (abs(total - 100) > 0.01 && total > 0) {
+    result[4:8] <- result[4:8] / total * 100
+  }
+  
+  return(list(
+    result = result,
+    models = list(null = model_null, np = model_np, 
+                  method = model_method, full = model_full)
+  ))
+}
+
+# ============================================================
+# 8. 分析所有蛋白
+# ============================================================
+
+results_all <- list()
+for (protein in protein_cols) {
+  result <- analyze_protein(df, protein, np_vars_max, method_vars_max)
+  if (!is.null(result)) {
+    results_all[[protein]] <- result
+  }
+}
+
+# 合并结果
+comparison_df <- do.call(rbind, lapply(results_all, function(x) x$result))
+rownames(comparison_df) <- NULL
+
+cat("\n\n========================================\n")
+cat("所有蛋白分析完成\n")
+cat("========================================\n")
+print(comparison_df)
+
+# ============================================================
+# 9. 保存结果
+# ============================================================
+
+output_dir <- "D:/jc/nanoparticl proteomics/article/PNAS/heterogeneity_analysis_results"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# 保存详细结果
+write.csv(comparison_df, 
+          file.path(output_dir, "variance_decomposition_all_proteins.csv"), 
+          row.names = FALSE)
+
+# 保存每个蛋白的详细分解
+for (protein in protein_cols) {
+  if (protein %in% names(results_all)) {
+    detail <- data.frame(
+      Source = c("Between-study differences (Study_ID)", 
+                 "Nanoparticle properties (unique)", 
+                 "Methodological covariates (unique)", 
+                 "Shared",
+                 "Unexplained (within-study)"),
+      Percentage = as.numeric(results_all[[protein]]$result[4:8])
+    )
+    write.csv(detail, 
+              file.path(output_dir, paste0("variance_decomposition_", protein, ".csv")), 
+              row.names = FALSE)
+  }
+}
+
+cat("\n✅ 结果已保存至:", output_dir, "\n")
+
+# ============================================================
+# 10. 定义绘图函数 - 每个蛋白单独绘制
+# ============================================================
+
+create_protein_plot <- function(protein, result_data, color_palette) {
+  # 准备数据
+  detail_data <- data.frame(
+    Source = factor(c("Between-study\ndifferences", 
+                      "NP properties\n(unique)", 
+                      "Methodological\ncovariates (unique)", 
+                      "Shared",
+                      "Unexplained\n(within-study)"),
+                    levels = c("Between-study\ndifferences", 
+                               "NP properties\n(unique)", 
+                               "Methodological\ncovariates (unique)", 
+                               "Shared",
+                               "Unexplained\n(within-study)")),
+    Percentage = as.numeric(result_data[4:8])
+  )
+  
+  # 创建图形
+  p <- ggplot(detail_data, aes(x = Source, y = Percentage, fill = Source)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = sprintf("%.1f%%", Percentage)), 
+              vjust = -0.3, size = 5.5, fontface = "bold") +
+    scale_fill_manual(values = color_palette) +
+    scale_y_continuous(limits = c(0, max(detail_data$Percentage) * 1.15),
+                       breaks = seq(0, 80, 20),
+                       labels = paste0(seq(0, 80, 20), "%"),
+                       expand = expansion(mult = c(0, 0.05))) +
+    labs(title = paste(protein, "Protein Corona Composition"),
+         subtitle = paste0("n = ", result_data$n_samples, 
+                           " samples, ", result_data$n_studies, " studies\n",
+                           "ICC = ", sprintf("%.1f", result_data$ICC), "% | ",
+                           "R² = ", sprintf("%.1f", result_data$R2_full), "%"),
+         x = NULL,
+         y = "Variance Explained (%)") +
+    theme_minimal(base_size = 14) +
+    theme(legend.position = "none",
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor.y = element_blank(),
+          plot.title = element_text(face = "bold", size = 18, hjust = 0.5),
+          plot.subtitle = element_text(hjust = 0.5, color = "gray50", size = 12),
+          axis.text.x = element_text(size = 11, face = "bold"),
+          axis.title.y = element_text(face = "bold", size = 13))
+  
+  return(p)
+}
+
+# ============================================================
+# 11. 绘制三张独立图
+# ============================================================
+
+# 颜色方案
+color_palette <- c(
+  "Between-study\ndifferences" = "#E69F00",
+  "NP properties\n(unique)" = "#2E86AB",
+  "Methodological\ncovariates (unique)" = "#A23B72",
+  "Shared" = "#F18F01",
+  "Unexplained\n(within-study)" = "#6C757D"
+)
+
+# 存储所有图形
+all_plots <- list()
+
+# 为每个蛋白创建图形
+for (protein in protein_cols) {
+  if (protein %in% names(results_all)) {
+    result_data <- results_all[[protein]]$result
+    p <- create_protein_plot(protein, result_data, color_palette)
+    all_plots[[protein]] <- p
+    
+    # 在RStudio中显示
+    print(p)
+    cat("\n按 Enter 键查看下一个蛋白的图...\n")
+    readline()
+  }
+}
+
+# ============================================================
+# 12. 保存所有图片
+# ============================================================
+
+cat("\n=== Saving figures ===\n")
+
+# 保存每个蛋白的独立图
+for (protein in protein_cols) {
+  if (protein %in% names(all_plots)) {
+    # 保存PNG
+    tryCatch({
+      ggsave(file.path(output_dir, paste0("Figure_Variance_Partitioning_", protein, ".png")),
+             all_plots[[protein]], width = 10, height = 7, dpi = 300)
+      cat("✅", protein, "PNG saved\n")
+    }, error = function(e) {
+      cat(protein, "PNG save failed:", e$message, "\n")
+    })
+    
+    # 保存PDF
+    tryCatch({
+      ggsave(file.path(output_dir, paste0("Figure_Variance_Partitioning_", protein, ".pdf")),
+             all_plots[[protein]], width = 10, height = 7)
+      cat("✅", protein, "PDF saved\n")
+    }, error = function(e) {
+      cat(protein, "PDF save failed:", e$message, "\n")
+    })
+  }
+}
+
+# 额外保存对比图（堆叠柱状图）
+plot_long <- comparison_df %>%
+  select(Protein, ICC, NP_unique, Method_unique, Shared, Unexplained) %>%
+  pivot_longer(cols = -Protein, 
+               names_to = "Source", 
+               values_to = "Percentage") %>%
+  mutate(
+    Source = factor(Source, 
+                    levels = c("ICC", "NP_unique", "Method_unique", "Shared", "Unexplained"),
+                    labels = c("Between-study", "NP properties", "Methods", "Shared", "Unexplained"))
+  )
+
+color_palette_compare <- c(
+  "Between-study" = "#E69F00",
+  "NP properties" = "#2E86AB",
+  "Methods" = "#A23B72",
+  "Shared" = "#F18F01",
+  "Unexplained" = "#6C757D"
+)
+
+comparison_plot <- ggplot(plot_long, 
+                          aes(x = Protein, 
+                              y = Percentage, 
+                              fill = Source)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.7) +
+  geom_text(aes(label = ifelse(Percentage > 5, sprintf("%.1f%%", Percentage), "")),
+            position = position_stack(vjust = 0.5), 
+            size = 4, color = "white", fontface = "bold") +
+  scale_fill_manual(values = color_palette_compare) +
+  labs(title = "Variance Partitioning Across Different Proteins",
+       subtitle = paste0("Maximal model | ", length(np_vars_max), " NP variables, ", 
+                         length(method_vars_max), " method variables"),
+       x = NULL,
+       y = "Variance Explained (%)",
+       fill = "Source") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5, color = "gray50", size = 11),
+        axis.text.x = element_text(size = 12, face = "bold"),
+        legend.position = "bottom",
+        legend.title = element_text(face = "bold"),
+        panel.grid.major.x = element_blank())
+
+# 显示对比图
+print(comparison_plot)
+
+# 保存对比图
+tryCatch({
+  ggsave(file.path(output_dir, "Figure_Variance_Comparison_All_Proteins.png"),
+         comparison_plot, width = 10, height = 7, dpi = 300)
+  cat("✅ Comparison plot saved\n")
+}, error = function(e) {
+  cat("Comparison plot save failed:", e$message, "\n")
+})
+
+cat("\n✅ All figures saved to:", output_dir, "\n")
+
+# ============================================================
+# 13. 输出汇总统计
+# ============================================================
+
+cat("\n========================================\n")
+cat("汇总统计\n")
+cat("========================================\n")
+
+# 计算各蛋白的平均值
+summary_stats <- comparison_df %>%
+  summarise(
+    Protein = "Average",
+    n_samples = mean(n_samples),
+    n_studies = mean(n_studies),
+    ICC = mean(ICC),
+    NP_unique = mean(NP_unique),
+    Method_unique = mean(Method_unique),
+    Shared = mean(Shared),
+    Unexplained = mean(Unexplained),
+    R2_full = mean(R2_full)
+  )
+
+# 添加范围
+range_stats <- comparison_df %>%
+  summarise(
+    Protein = "Range",
+    ICC = paste0(round(min(ICC), 1), " - ", round(max(ICC), 1)),
+    NP_unique = paste0(round(min(NP_unique), 1), " - ", round(max(NP_unique), 1)),
+    Method_unique = paste0(round(min(Method_unique), 1), " - ", round(max(Method_unique), 1)),
+    Shared = paste0(round(min(Shared), 1), " - ", round(max(Shared), 1)),
+    Unexplained = paste0(round(min(Unexplained), 1), " - ", round(max(Unexplained), 1)),
+    R2_full = paste0(round(min(R2_full), 1), " - ", round(max(R2_full), 1))
+  )
+
+# 打印
+print(comparison_df)
+cat("\n--- 平均值 ---\n")
+print(summary_stats)
+cat("\n--- 范围 ---\n")
+print(range_stats)
+
+cat("\n✅ 分析完成！\n")
